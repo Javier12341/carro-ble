@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#1b1b1b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<title>Control carro BLE</title>
+<style>
+:root{--blue:#22aef0;--blue2:#0a6fb0;--ice:#bfeaff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;touch-action:none}
+html,body{margin:0;height:100%;background:#222;color:#fff;font-family:system-ui,sans-serif;overflow:hidden;overscroll-behavior:none}
+body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+header{display:flex;align-items:center;gap:10px;padding:6px 12px;background:linear-gradient(#444,#1b1b1b);border-bottom:2px solid #000}
+header h1{font-size:15px;margin:0;font-weight:600}
+#estado{font-size:13px;color:#bbb;flex:1;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#con{width:38px;height:38px;flex:none;border-radius:50%;border:2px solid #600;background:radial-gradient(circle at 35% 30%,#ff8a8a,#d01010 60%,#700);box-shadow:0 0 8px #d01010}
+#con.on{border-color:#060;background:radial-gradient(circle at 35% 30%,#a8ffa8,#10b010 60%,#070);box-shadow:0 0 8px #10b010}
+.vel{display:flex;align-items:center;gap:8px;flex:2;font-size:13px}
+.vel input{flex:1;accent-color:var(--blue)}
+.plate{flex:1;display:grid;grid-template-columns:1fr 1.15fr 1.7fr;gap:10px;padding:10px;min-height:0;
+ background:repeating-linear-gradient(45deg,rgba(255,255,255,.07) 0 3px,rgba(0,0,0,.12) 3px 6px),linear-gradient(#7c8288,#4b5055)}
+.col{display:grid;gap:10px;min-height:0}
+.izq{grid-template-rows:1fr 1fr}
+.der{grid-template-columns:1fr 1fr}
+.pad{position:relative;border:0;border-radius:8px;padding:0;background:linear-gradient(#5c6167,#34383c);box-shadow:inset 0 0 0 2px #1a1c1e,inset 0 0 14px #000}
+.pad::before,.pad::after{content:"";position:absolute;top:8%;bottom:8%;width:5px;border-radius:3px;background:linear-gradient(var(--ice),var(--blue) 40%,var(--blue2));box-shadow:0 0 6px var(--blue)}
+.pad::before{left:4%}.pad::after{right:4%}
+.disco{position:absolute;inset:50% auto auto 50%;height:min(78%,150px);aspect-ratio:1;transform:translate(-50%,-50%);border-radius:50%;display:grid;place-items:center;
+ background:radial-gradient(circle at 50% 35%,#555,#111 70%);box-shadow:0 0 0 4px #888,0 0 0 6px #222,inset 0 -6px 14px #000}
+.disco svg{width:48%;height:48%;fill:var(--blue);filter:drop-shadow(0 0 4px var(--blue2))}
+.act .disco{box-shadow:0 0 0 4px var(--ice),0 0 20px var(--blue),inset 0 -6px 14px #000}
+.act .disco svg,.act.flecha svg{fill:#fff}
+.centro{display:grid;grid-template:repeat(3,1fr)/repeat(3,1fr);gap:4px;padding:4px;border-radius:8px;background:linear-gradient(#5c6167,#34383c);box-shadow:inset 0 0 0 2px #1a1c1e;min-height:0}
+.flecha{border:0;background:none;display:grid;place-items:center;padding:0}
+.flecha svg{width:80%;height:80%;fill:var(--blue);filter:drop-shadow(0 0 3px var(--blue2));stroke:var(--ice);stroke-width:.6}
+#aviso{display:none;position:fixed;left:10px;right:10px;bottom:10px;background:#7a1010;padding:10px;border-radius:6px;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <button id="con" aria-label="Conectar o desconectar"></button>
+  <h1>Control carro BLE</h1>
+  <label class="vel">Velocidad <input id="vel" type="range" min="0" max="9" value="7"></label>
+  <span id="estado">Desconectado: toca el círculo rojo</span>
+</header>
+
+<main class="plate">
+  <div class="col izq">
+    <button class="pad" data-c="F" aria-label="Adelante"><span class="disco"><svg viewBox="0 0 24 24"><path d="M12 3 23 21H1z"/></svg></span></button>
+    <button class="pad" data-c="B" aria-label="Atrás"><span class="disco"><svg viewBox="0 0 24 24"><path d="M12 21 1 3h22z"/></svg></span></button>
+  </div>
+  <div class="centro" id="centro"></div>
+  <div class="col der">
+    <button class="pad" data-c="L" aria-label="Izquierda"><span class="disco"><svg viewBox="0 0 24 24"><path d="M3 12 21 1v22z"/></svg></span></button>
+    <button class="pad" data-c="R" aria-label="Derecha"><span class="disco"><svg viewBox="0 0 24 24"><path d="M21 12 3 23V1z"/></svg></span></button>
+  </div>
+</main>
+<div id="aviso"></div>
+
+<script>
+const SVC = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const RX  = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+const MOV = "FBLRGIHJS";
+const enc = new TextEncoder();
+const $ = id => document.getElementById(id);
+let dev = null, ch = null, enviando = false, last = "S";
+const cola = [];
+const activos = new Map(); // pointerId -> {code, el}
+
+// Flechas del centro
+[["G",-45],["F",0],["I",45],["L",-90],null,["R",90],["H",-135],["B",180],["J",135]].forEach(it => {
+  if (!it) { $("centro").appendChild(document.createElement("div")); return; }
+  const b = document.createElement("button");
+  b.className = "flecha"; b.dataset.c = it[0];
+  b.innerHTML = `<svg viewBox="0 0 24 24" style="transform:rotate(${it[1]}deg)"><path d="M12 2 21 13h-5.5v9h-7v-9H3z"/></svg>`;
+  $("centro").appendChild(b);
+});
+
+function aviso(t){ const a=$("aviso"); a.textContent=t; a.style.display="block"; setTimeout(()=>a.style.display="none",5000); }
+
+// Cola de envío: sin esperas. Un movimiento nuevo reemplaza al movimiento pendiente, nunca se pierde el último.
+function enviar(c){
+  if (MOV.includes(c)) for (let i=cola.length-1;i>=0;i--) if (MOV.includes(cola[i])) cola.splice(i,1);
+  cola.push(c);
+  vaciar();
+}
+async function vaciar(){
+  if (enviando || !ch) return;
+  enviando = true;
+  while (cola.length && ch) {
+    try { await ch.writeValueWithoutResponse(enc.encode(cola.shift())); } catch(e){ /* el siguiente envío reintenta */ }
+  }
+  enviando = false;
+}
+
+// Une pulsaciones simultáneas: adelante + izquierda = diagonal
+function resolver(){
+  const s = new Set([...activos.values()].map(a=>a.code));
+  for (const d of "GIHJ") if (s.has(d)) return d;
+  const v = s.has("F")&&!s.has("B") ? 1 : s.has("B")&&!s.has("F") ? -1 : 0;
+  const h = s.has("R")&&!s.has("L") ? 1 : s.has("L")&&!s.has("R") ? -1 : 0;
+  return ({"1,-1":"G","1,1":"I","-1,-1":"H","-1,1":"J","1,0":"F","-1,0":"B","0,-1":"L","0,1":"R"})[v+","+h] || "S";
+}
+function actualizar(){
+  const c = resolver();
+  if (c !== last) { last = c; enviar(c); }
+}
+// Reenvío de seguridad (el carro se frena si deja de recibir): no añade latencia
+setInterval(()=>{ if (last !== "S") enviar(last); }, 250);
+
+function pulsar(e, el){
+  e.preventDefault();
+  el.setPointerCapture(e.pointerId);
+  activos.set(e.pointerId, {code: el.dataset.c, el});
+  el.classList.add("act");
+  if (navigator.vibrate) navigator.vibrate(8);
+  actualizar();
+}
+function soltar(e){
+  const a = activos.get(e.pointerId);
+  if (!a) return;
+  activos.delete(e.pointerId);
+  if (![...activos.values()].some(x=>x.el===a.el)) a.el.classList.remove("act");
+  actualizar();
+}
+function pararTodo(){
+  activos.forEach(a=>a.el.classList.remove("act")); activos.clear();
+  last = "S"; enviar("S");
+}
+document.querySelectorAll("[data-c]").forEach(el=>{
+  el.addEventListener("pointerdown", e=>pulsar(e, el));
+  el.addEventListener("pointerup", soltar);
+  el.addEventListener("pointercancel", soltar);
+  el.addEventListener("contextmenu", e=>e.preventDefault());
+});
+document.addEventListener("visibilitychange", ()=>{ if (document.hidden) pararTodo(); });
+$("vel").addEventListener("input", e=>enviar(e.target.value));
+
+// Conexión
+function estado(si, txt){ $("con").classList.toggle("on", si); $("estado").textContent = txt; }
+
+async function abrir(){
+  const srv = await dev.gatt.connect();
+  const svc = await srv.getPrimaryService(SVC);
+  ch = await svc.getCharacteristic(RX);
+  estado(true, "Conectado a " + (dev.name || "CarroBLE"));
+  enviar($("vel").value);
+  try { await navigator.wakeLock.request("screen"); } catch(e){}
+}
+async function conectar(){
+  if (!navigator.bluetooth) { aviso("Este navegador no admite Web Bluetooth. Usa Chrome en Android."); return; }
+  try{
+    if (!dev) {
+      dev = await navigator.bluetooth.requestDevice({filters:[{services:[SVC]}]});
+      dev.addEventListener("gattserverdisconnected", ()=>{ ch = null; cola.length = 0; estado(false, "Desconectado: toca el círculo rojo"); });
+    }
+    estado(false, "Conectando…");
+    await abrir();
+  }catch(e){ estado(false, "Desconectado: toca el círculo rojo"); if (e.name !== "NotFoundError") aviso("No se pudo conectar: " + e.message); }
+}
+$("con").addEventListener("click", ()=>{ if (dev && dev.gatt.connected) { pararTodo(); dev.gatt.disconnect(); } else conectar(); });
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+</script>
+</body>
+</html>
